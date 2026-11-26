@@ -41,27 +41,25 @@ jobs:
           git config --global url."git@github.com:luccapolizeli/plz-ekko".insteadOf "https://github.com/luccapolizeli/plz-ekko"
           git clone -q --depth 1 https://github.com/luccapolizeli/plz-ekko.git "$RUNNER_TEMP/source"
           echo "Código da main: $(git -C "$RUNNER_TEMP/source" log -1 --format=%h)"
-      - name: Pôr a chave de assinatura no Chaves desta máquina (só durante a fabricação)
-        env:
-          ED_KEY: ${{ secrets.EKKO_UPDATES_ED_KEY }}
-        run: |
-          test -n "$ED_KEY" || { echo 'Falta o segredo EKKO_UPDATES_ED_KEY no ambiente ekko-release.'; exit 1; }
-          security add-generic-password -U -A -a ekko-plz-updates -s https://sparkle-project.org -w "$ED_KEY"
       - name: Fabricar o rascunho
+        timeout-minutes: 90
         env:
           GH_TOKEN: ${{ github.token }}
           EKKO_RELEASE_HOME: ${{ runner.temp }}/ekko-release
+          # A chave entra direto na ferramenta de assinatura; o Chaves pediria um clique que ninguém dá.
+          EKKO_UPDATES_ED_KEY: ${{ secrets.EKKO_UPDATES_ED_KEY }}
         run: |
+          test -n "$EKKO_UPDATES_ED_KEY" || { echo 'Falta o segredo EKKO_UPDATES_ED_KEY no ambiente ekko-release.'; exit 1; }
           log="$RUNNER_TEMP/fabricacao.log"
-          if bash "$RUNNER_TEMP/source/scripts/ekko-release/prepare-mac.sh" > "$log" 2>&1; then
+          set -o pipefail
+          # No registro público aparecem só as etapas; o resto fica no arquivo.
+          if bash "$RUNNER_TEMP/source/scripts/ekko-release/prepare-mac.sh" 2>&1 | tee "$log" | awk '/^== etapa/ { print; fflush() }'; then
             tail -3 "$log"
           else
             echo 'A fabricação falhou. Últimas linhas:'
             tail -15 "$log"
             exit 1
           fi
-      - name: Tirar as chaves desta máquina
+      - name: Tirar a chave de leitura desta máquina
         if: always()
-        run: |
-          security delete-generic-password -a ekko-plz-updates -s https://sparkle-project.org >/dev/null 2>&1 || true
-          rm -f ~/.ssh/ekko_source
+        run: rm -f ~/.ssh/ekko_source

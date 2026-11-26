@@ -1,0 +1,67 @@
+name: Fabricar versão do Ekko
+# Por pedido do dono, de qualquer lugar: gh workflow run fabricar-versao.yml --repo luccapolizeli/ekko-updates
+# Fabrica o app numa máquina Mac do GitHub (grátis em repositório público) e deixa a versão como RASCUNHO aqui.
+# Publicar continua sendo um passo à parte. Cada execução espera a aprovação do dono (ambiente "ekko-release").
+# Segredos do ambiente (nunca aparecem nos registros):
+#   EKKO_SOURCE_DEPLOY_KEY  chave só de leitura do código privado (luccapolizeli/plz-ekko)
+#   EKKO_UPDATES_ED_KEY     chave privada que assina as atualizações (conta ekko-plz-updates)
+# Este repositório é público: os registros mostram só o resumo; em falha, apenas as últimas linhas.
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: ekko-release
+  cancel-in-progress: false
+jobs:
+  draft:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    environment: ekko-release
+    timeout-minutes: 150
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Abrir espaço no disco (a fabricação precisa de 12 GB livres)
+        run: |
+          sudo rm -rf "${ANDROID_HOME:-/nonexistent}" "$HOME/Library/Android" /Users/runner/hostedtoolcache/CodeQL
+          xcrun simctl delete all >/dev/null 2>&1 || true
+          sudo rm -rf "$HOME/Library/Developer/CoreSimulator" /Library/Developer/CoreSimulator/Profiles/Runtimes
+          df -h / | tail -1
+      - name: Acesso só de leitura ao código privado
+        env:
+          DEPLOY_KEY: ${{ secrets.EKKO_SOURCE_DEPLOY_KEY }}
+        run: |
+          test -n "$DEPLOY_KEY" || { echo 'Falta o segredo EKKO_SOURCE_DEPLOY_KEY no ambiente ekko-release.'; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/ekko_source && chmod 600 ~/.ssh/ekko_source
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          printf 'Host github.com\n  IdentityFile ~/.ssh/ekko_source\n  IdentitiesOnly yes\n' >> ~/.ssh/config
+          git config --global url."git@github.com:luccapolizeli/plz-ekko".insteadOf "https://github.com/luccapolizeli/plz-ekko"
+          git clone -q --depth 1 https://github.com/luccapolizeli/plz-ekko.git "$RUNNER_TEMP/source"
+          echo "Código da main: $(git -C "$RUNNER_TEMP/source" log -1 --format=%h)"
+      - name: Pôr a chave de assinatura no Chaves desta máquina (só durante a fabricação)
+        env:
+          ED_KEY: ${{ secrets.EKKO_UPDATES_ED_KEY }}
+        run: |
+          test -n "$ED_KEY" || { echo 'Falta o segredo EKKO_UPDATES_ED_KEY no ambiente ekko-release.'; exit 1; }
+          security add-generic-password -U -A -a ekko-plz-updates -s https://sparkle-project.org -w "$ED_KEY"
+      - name: Fabricar o rascunho
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EKKO_RELEASE_HOME: ${{ runner.temp }}/ekko-release
+        run: |
+          log="$RUNNER_TEMP/fabricacao.log"
+          if bash "$RUNNER_TEMP/source/scripts/ekko-release/prepare-mac.sh" > "$log" 2>&1; then
+            tail -3 "$log"
+          else
+            echo 'A fabricação falhou. Últimas linhas:'
+            tail -15 "$log"
+            exit 1
+          fi
+      - name: Tirar as chaves desta máquina
+        if: always()
+        run: |
+          security delete-generic-password -a ekko-plz-updates -s https://sparkle-project.org >/dev/null 2>&1 || true
+          rm -f ~/.ssh/ekko_source

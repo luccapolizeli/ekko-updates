@@ -41,11 +41,29 @@ jobs:
           git config --global url."git@github.com:luccapolizeli/plz-ekko".insteadOf "https://github.com/luccapolizeli/plz-ekko"
           git clone -q --depth 1 https://github.com/luccapolizeli/plz-ekko.git "$RUNNER_TEMP/source"
           echo "Código da main: $(git -C "$RUNNER_TEMP/source" log -1 --format=%h)"
+      # Pacotes, Electron e o programa do ditado guardados entre fabricações. Só esta automação (na main) grava o cache;
+      # o npm confere cada pacote pelo package-lock.
+      - name: Chave do que fica guardado
+        id: chaves
+        run: |
+          src="$RUNNER_TEMP/source"
+          echo "pacotes=$(cat "$src/package-lock.json" "$src/desktop/package-lock.json" | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          echo "ditado=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$src/desktop/scripts/whisper-engine.sh")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+            ${{ runner.temp }}/whisper-cache
+          key: ekko-${{ steps.chaves.outputs.pacotes }}-${{ steps.chaves.outputs.ditado }}
+          restore-keys: ekko-
       - name: Fabricar o rascunho
         timeout-minutes: 90
         env:
           GH_TOKEN: ${{ github.token }}
           EKKO_RELEASE_HOME: ${{ runner.temp }}/ekko-release
+          EKKO_WHISPER_CACHE: ${{ runner.temp }}/whisper-cache
           # A chave entra direto na ferramenta de assinatura; o Chaves pediria um clique que ninguém dá.
           EKKO_UPDATES_ED_KEY: ${{ secrets.EKKO_UPDATES_ED_KEY }}
         run: |
